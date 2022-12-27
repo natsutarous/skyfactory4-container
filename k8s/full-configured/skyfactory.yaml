@@ -1,0 +1,111 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minecraft-config
+data:
+  server.properties: |
+    # Expose RCON port.
+    enable-rcon=true
+    rcon.port=25575
+    rcon.password=passwd
+    # MOTD
+    motd=SkyFactory 4 Server on Kubernetes
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skyfactory
+  labels:
+    app: skyfactory
+spec:
+  ports:
+  - port: 25565
+    name: minecraft
+  - port: 25575
+    name: rcon
+  selector:
+    app: skyfactory
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: skyfactory
+spec:
+  selector:
+    matchLabels:
+      app: skyfactory
+  serviceName: "skyfactory"
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: skyfactory
+    spec:
+      securityContext:
+        # skyfactory:skyfactory
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      initContainers:
+      - # The Skyfactory 4 server rewrites server.properties when it starts up. 
+        # This initContainer copies server.properties from ConfigMap to EmptyDir.
+        name: config-mounter
+        image: busybox:latest
+        command:
+        - cp
+        - /skyfactory/server.properties
+        - /tmp/server/server.properties
+        volumeMounts:
+        - name: config
+          mountPath: /skyfactory/server.properties
+          subPath: server.properties
+        - name: server-config
+          mountPath: /tmp/server/
+      containers:
+      - name: skyfactory
+        image: ghcr.io/natsutarous/skyfactory4:4.2.4.latest
+        ports:
+        - containerPort: 25565
+          name: minecraft
+        - containerPort: 25575
+          name: rcon
+        volumeMounts:
+        - name: world
+          mountPath: /skyfactory/world
+        - name: server-config
+          mountPath: /skyfactory/server.properties
+          subPath: server.properties
+        env:
+        - name: MIN_RAM
+          value: 4g
+        - name: MAX_RAM
+          value: 4g
+        - name: JAVA_OPTS
+          value: "-XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError"
+        resources:
+          requests:
+            cpu: 2000m
+            memory: 6Gi
+          limits:
+            cpu: 2000m
+            memory: 6Gi
+        startupProbe:
+          # Wait 8 mins
+          initialDelaySeconds: 300
+          tcpSocket:
+            port: minecraft
+          failureThreshold: 30
+          periodSeconds: 8
+        livenessProbe:
+          tcpSocket:
+            port: minecraft
+          failureThreshold: 3
+          periodSeconds: 10
+      volumes:
+      - name: world
+        emptyDir: {}
+      - name: server-config
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: minecraft-config
